@@ -3,14 +3,169 @@
 #include <string.h>
 #include <3ds.h>
 #include <git2.h>
+#include <errno.h>
 
-extern int cred_acquire_cb(git_credential **out,
+char *realpath(const char *restrict file_name,
+       char *restrict resolved_name) {
+    errno = EIO;
+    return NULL;
+}
+
+ssize_t readlink(const char *restrict path, char *restrict buf, size_t bufsize) {
+    errno = EINVAL;
+    return -1;
+}
+
+ssize_t symlink(const char *path1, const char *path2) {
+    errno = EIO;
+    return -1;
+}
+
+char *p_realpath(const char *pathname, char *resolved)
+{
+	char *ret;
+	if ((ret = realpath(pathname, resolved)) == NULL)
+		return NULL;
+
+#ifdef __OpenBSD__
+	/* The OpenBSD realpath function behaves differently,
+	 * figure out if the file exists */
+	if (access(ret, F_OK) < 0)
+		ret = NULL;
+#endif
+	return ret;
+}
+
+uid_t getuid(void) {
+    return 0;
+}
+
+uid_t geteuid(void) {
+    return 0;
+}
+
+struct passwd {};
+
+int getpwuid_r(uid_t uid, struct passwd *pwd, char *buffer, size_t bufsize, struct passwd **result) {
+    return EIO;
+}
+
+long sysconf(int name) {
+    errno = EINVAL;
+    return -1;
+}
+
+mode_t umask(mode_t cmask) {
+    return 0;
+}
+
+#define UNUSED(x) (void)(x)
+
+static int readline(char **out)
+{
+	int c, error = 0, length = 0, allocated = 0;
+	char *line = NULL;
+
+	errno = 0;
+
+	while ((c = getchar()) != EOF) {
+		if (length == allocated) {
+			allocated += 16;
+
+			if ((line = realloc(line, allocated)) == NULL) {
+				error = -1;
+				goto error;
+			}
+		}
+
+		if (c == '\n')
+			break;
+
+		line[length++] = c;
+	}
+
+	if (errno != 0) {
+		error = -1;
+		goto error;
+	}
+
+	line[length] = '\0';
+	*out = line;
+	line = NULL;
+	error = length;
+error:
+	free(line);
+	return error;
+}
+
+static int ask(char **out, const char *prompt, char optional)
+{
+	printf("%s ", prompt);
+	fflush(stdout);
+
+	if (!readline(out) && !optional) {
+		fprintf(stderr, "Could not read response: %s", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+int cred_acquire_cb(git_credential **out,
 		const char *url,
 		const char *username_from_url,
 		unsigned int allowed_types,
-		void *payload);
+		void *payload)
+{
+	char *username = NULL, *password = NULL, *privkey = NULL, *pubkey = NULL;
+	int error = 1;
+
+	UNUSED(url);
+	UNUSED(payload);
+
+	if (username_from_url) {
+		if ((username = strdup(username_from_url)) == NULL)
+			goto out;
+	} else if ((error = ask(&username, "Username:", 0)) < 0) {
+		goto out;
+	}
+
+	if (allowed_types & GIT_CREDENTIAL_SSH_KEY) {
+		int n;
+
+		if ((error = ask(&privkey, "SSH Key:", 0)) < 0 ||
+		    (error = ask(&password, "Password:", 1)) < 0)
+			goto out;
+
+		if ((n = snprintf(NULL, 0, "%s.pub", privkey)) < 0 ||
+		    (pubkey = malloc(n + 1)) == NULL ||
+		    (n = snprintf(pubkey, n + 1, "%s.pub", privkey)) < 0)
+			goto out;
+
+		error = git_credential_ssh_key_new(out, username, pubkey, privkey, password);
+	} else if (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) {
+		if ((error = ask(&password, "Password:", 1)) < 0)
+			goto out;
+
+		error = git_credential_userpass_plaintext_new(out, username, password);
+	} else if (allowed_types & GIT_CREDENTIAL_USERNAME) {
+		error = git_credential_username_new(out, username);
+	}
+
+out:
+	free(username);
+	free(password);
+	free(privkey);
+	free(pubkey);
+	return error;
+}
 
 #define PRIuZ "zu"
+
+volatile void * git___load(void * volatile *ptr)
+{
+	return *ptr;
+}
 
 typedef struct progress_data {
 	git_indexer_progress fetch_progress;
