@@ -37,148 +37,120 @@ static size_t slash_len(const char *s)
 	return s-s0;
 }
 
-char *realpath(const char *restrict filename, char *restrict resolved)
+char *
+realpath(const char *path, char resolved[PATH_MAX])
 {
-	char stack[PATH_MAX+1];
-	char output[PATH_MAX];
-	size_t p, q, l, l0, cnt=0, nup=0;
-	int check_dir=0;
+    char *p, *q, *s;
+    size_t left_len = 0, resolved_len = 0;
+    char left[PATH_MAX], next_token[PATH_MAX];
+    if (path[0] == '/') {
+        char drive[PATH_MAX];
+        if (getcwd(drive, PATH_MAX) == NULL) {
+            strlcpy(resolved, ".", PATH_MAX);
+            return (NULL);
+        }
+        strtok(drive, "/");
+        resolved_len = strlcpy(resolved, drive, PATH_MAX);
+        strlcat(resolved, "/", PATH_MAX);
+        resolved_len++;
+        if (path[1] == '\0')
+            return (resolved);
+        left_len = strlcpy(left, path + 1, sizeof(left));
+    } else {
+        int i, path_len = strlen(path);
+        for (i=0; i<path_len; i++) {
+            if (path[i] == '/') {
+                if (path[i - 1] == ':') {
+                    strncpy(resolved, path, i + 1);
+                    resolved_len = i + 1;
+                    left_len = strlcpy(left, path + i, sizeof(left));
+                } else {
+                    i = path_len;
+                }
+                break;
+            }
+        }
 
-	if (!filename) {
-		errno = EINVAL;
-		return 0;
-	}
-	l = strnlen(filename, sizeof stack);
-	if (!l) {
-		errno = ENOENT;
-		return 0;
-	}
-	if (l >= PATH_MAX) goto toolong;
-	p = sizeof stack - l - 1;
-	q = 0;
-	memcpy(stack+p, filename, l+1);
-
-	/* Main loop. Each iteration pops the next part from stack of
-	 * remaining path components and consumes any slashes that follow.
-	 * If not a link, it's moved to output; if a link, contents are
-	 * pushed to the stack. */
-restart:
-	for (; ; p+=slash_len(stack+p)) {
-		/* If stack starts with /, the whole component is / or //
-		 * and the output state must be reset. */
-		if (stack[p] == '/') {
-			check_dir=0;
-			nup=0;
-			q=0;
-			output[q++] = '/';
-			p++;
-			/* Initial // is special. */
-			if (stack[p] == '/' && stack[p+1] != '/')
-				output[q++] = '/';
-			continue;
-		}
-
-		char *z = __strchrnul(stack+p, '/');
-		l0 = l = z-(stack+p);
-
-		if (!l && !check_dir) break;
-
-		/* Skip any . component but preserve check_dir status. */
-		if (l==1 && stack[p]=='.') {
-			p += l;
-			continue;
-		}
-
-		/* Copy next component onto output at least temporarily, to
-		 * call readlink, but wait to advance output position until
-		 * determining it's not a link. */
-		if (q && output[q-1] != '/') {
-			if (!p) goto toolong;
-			stack[--p] = '/';
-			l++;
-		}
-		if (q+l >= PATH_MAX) goto toolong;
-		memcpy(output+q, stack+p, l);
-		output[q+l] = 0;
-		p += l;
-
-		int up = 0;
-		if (l0==2 && stack[p-2]=='.' && stack[p-1]=='.') {
-			up = 1;
-			/* Any non-.. path components we could cancel start
-			 * after nup repetitions of the 3-byte string "../";
-			 * if there are none, accumulate .. components to
-			 * later apply to cwd, if needed. */
-			if (q <= 3*nup) {
-				nup++;
-				q += l;
-				continue;
-			}
-			/* When previous components are already known to be
-			 * directories, processing .. can skip readlink. */
-			if (!check_dir) goto skip_readlink;
-		}
-		ssize_t k = readlink(output, stack, p);
-		if (k==p) goto toolong;
-		if (!k) {
-			errno = ENOENT;
-			return 0;
-		}
-		if (k<0) {
-			if (errno != EINVAL) return 0;
-skip_readlink:
-			check_dir = 0;
-			if (up) {
-				while(q && output[q-1]!='/') q--;
-				if (q>1 && (q>2 || output[0]!='/')) q--;
-				continue;
-			}
-			if (l0) q += l;
-			check_dir = stack[p];
-			continue;
-		}
-		if (++cnt == SYMLOOP_MAX) {
-			errno = ELOOP;
-			return 0;
-		}
-
-		/* If link contents end in /, strip any slashes already on
-		 * stack to avoid /->// or //->/// or spurious toolong. */
-		if (stack[k-1]=='/') while (stack[p]=='/') p++;
-		p -= k;
-		memmove(stack+p, stack, k);
-
-		/* Skip the stack advancement in case we have a new
-		 * absolute base path. */
-		goto restart;
-	}
-
- 	output[q] = 0;
-
-	if (output[0] != '/') {
-		if (!getcwd(stack, sizeof stack)) return 0;
-		l = strlen(stack);
-		/* Cancel any initial .. components. */
-		p = 0;
-		while (nup--) {
-			while(l>1 && stack[l-1]!='/') l--;
-			if (l>1) l--;
-			p += 2;
-			if (p<q) p++;
-		}
-		if (q-p && stack[l-1]!='/') stack[l++] = '/';
-		if (l + (q-p) + 1 >= PATH_MAX) goto toolong;
-		memmove(output + l, output + p, q - p + 1);
-		memcpy(output, stack, l);
-		q = l + q-p;
-	}
-
-	if (resolved) return memcpy(resolved, output, q+1);
-	else return strdup(output);
-
-toolong:
-	errno = ENAMETOOLONG;
-	return 0;
+        if (i == path_len) {
+            if (getcwd(resolved, PATH_MAX) == NULL) {
+                strlcpy(resolved, ".", PATH_MAX);
+                return (NULL);
+            }
+            resolved_len = strlen(resolved);
+            left_len = strlcpy(left, path, sizeof(left));
+        }
+    }
+    if (left_len >= sizeof(left) || resolved_len >= PATH_MAX) {
+        errno = ENAMETOOLONG;
+        return (NULL);
+    }
+    /*
+     * Iterate over path components in `left'.
+     */
+    while (left_len != 0) {
+        /*
+         * Extract the next path component and adjust `left'
+         * and its length.
+         */
+        p = strchr(left, '/');
+        s = p ? p : left + left_len;
+        if (s - left >= sizeof(next_token)) {
+            errno = ENAMETOOLONG;
+            return (NULL);
+        }
+        memcpy(next_token, left, s - left);
+        next_token[s - left] = '\0';
+        left_len -= s - left;
+        if (p != NULL)
+            memmove(left, s + 1, left_len + 1);
+        if (resolved[resolved_len - 1] != '/') {
+            if (resolved_len + 1 >= PATH_MAX) {
+                errno = ENAMETOOLONG;
+                return (NULL);
+            }
+            resolved[resolved_len++] = '/';
+            resolved[resolved_len] = '\0';
+        }
+        if (next_token[0] == '\0')
+            continue;
+        else if (strcmp(next_token, ".") == 0)
+            continue;
+        else if (strcmp(next_token, "..") == 0) {
+            /*
+             * Strip the last path component except when we have
+             * single "/"
+             */
+            if (resolved_len > 1) {
+                resolved[resolved_len - 1] = '\0';
+                q = strrchr(resolved, '/') + 1;
+                *q = '\0';
+                resolved_len = q - resolved;
+            }
+            continue;
+        }
+        /*
+         * Append the next path component and lstat() it. If
+         * lstat() fails we still can return successfully if
+         * there are no more path components left.
+         */
+        resolved_len = strlcat(resolved, next_token, PATH_MAX);
+        if (resolved_len >= PATH_MAX) {
+            errno = ENAMETOOLONG;
+            return (NULL);
+        }
+    }
+    /*
+     * Remove trailing slash except when the resolved pathname
+     * is a single "/".
+     */
+    int just_drive = 0;
+    for (int i=0; i<resolved_len; i++) {
+        if (resolved[i] == '/' && resolved[i - 1] == ':' && ++just_drive > 1)
+            break;
+    }
+    if (resolved_len > 1 && resolved[resolved_len - 1] == '/' && just_drive > 1)
+        resolved[resolved_len - 1] = '\0';
+    return (resolved);
 }
 
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t bufsize) {
@@ -226,7 +198,7 @@ long sysconf(int name) {
 }
 
 mode_t umask(mode_t cmask) {
-    return 0;
+    return 0777;
 }
 
 #define UNUSED(x) (void)(x)
@@ -440,18 +412,48 @@ int lg2_clone(git_repository *repo, int argc, char **argv)
 	return error;
 }
 
-int main(int argc, char* argv[])
-{
-	gfxInitDefault();
-	consoleInit(GFX_TOP, NULL);
+void cloneThread(void* arg) {
+	printf("Starting clone...\n");
 
-        char* args[] = { "clone", "https://github.com/s5bug/calculo.git", "sdmc:/calculo" };
+    char* args[] = { "clone", "https://github.com/s5bug/calculo.git", "sdmc:/calculo" };
 
 	lg2_clone(NULL, 3, args);
+}
+
+bool networkAvailable() {
+	u32 wifi = 0;
+	if (R_FAILED (ACU_GetWifiStatus(&wifi)) || !wifi) {
+		return false;
+	}
+
+	return true;
+}
+
+bool haveWifi = false;
+
+void testWifi() {
+	if(!haveWifi && networkAvailable()) {
+		printf("WiFi Acquired.\n");
+		threadCreate(cloneThread, NULL, 0x10000, 0x3F, 0, true);
+		haveWifi = true;
+	}
+}
+
+int main(int argc, char* argv[])
+{
+	acInit();
+	ptmuInit();
+
+	git_libgit2_init();
+
+	gfxInitDefault();
+	consoleInit(GFX_TOP, NULL);
 
 	// Main loop
 	while (aptMainLoop())
 	{
+		testWifi();
+
 		gspWaitForVBlank();
 		gfxSwapBuffers();
 		hidScanInput();
@@ -463,5 +465,10 @@ int main(int argc, char* argv[])
 	}
 
 	gfxExit();
+
+	git_libgit2_shutdown();
+
+	ptmuExit();
+	acExit();
 	return 0;
 }
