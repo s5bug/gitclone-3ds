@@ -6,36 +6,26 @@
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
+#include <malloc.h>
+#include <mbedtls/x509_crt.h>
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
+	off_t restore = lseek(fd, 0, SEEK_CUR);
+	lseek(fd, offset, SEEK_SET);
+	int rres = read(fd, buf, count);
+	lseek(fd, restore, SEEK_SET);
+	return rres;
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
+	off_t restore = lseek(fd, 0, SEEK_CUR);
+	lseek(fd, offset, SEEK_SET);
+	int wres = write(fd, buf, count);
+	lseek(fd, restore, SEEK_SET);
+	return wres;
+}
 
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t bufsize);
-
-#define PTR_ALIGN (sizeof(size_t))
-#define ONES ((size_t)-1/UCHAR_MAX)
-#define HIGHS (ONES * (UCHAR_MAX/2+1))
-#define HASZERO(x) ((x)-ONES & ~(x) & HIGHS)
-
-char *__strchrnul(const char *s, int c)
-{
-	size_t *w, k;
-
-	c = (unsigned char)c;
-	if (!c) return (char *)s + strlen(s);
-
-	for (; (uintptr_t)s % PTR_ALIGN; s++)
-		if (!*s || *(unsigned char *)s == c) return (char *)s;
-	k = ONES * c;
-	for (w = (void *)s; !HASZERO(*w) && !HASZERO(*w^k); w++);
-	for (s = (void *)w; *s && *(unsigned char *)s != c; s++);
-	return (char *)s;
-}
-
-#define SYMLOOP_MAX 1
-static size_t slash_len(const char *s)
-{
-	const char *s0 = s;
-	while (*s == '/') s++;
-	return s-s0;
-}
 
 char *
 realpath(const char *path, char resolved[PATH_MAX])
@@ -434,17 +424,28 @@ bool haveWifi = false;
 void testWifi() {
 	if(!haveWifi && networkAvailable()) {
 		printf("WiFi Acquired.\n");
-		threadCreate(cloneThread, NULL, 0x10000, 0x3F, 0, true);
+		threadCreate(cloneThread, NULL, 0x80000, 0x3F, 0, true);
 		haveWifi = true;
 	}
 }
 
+#define SOCU_BUFFERSIZE 0x100000
+#define SOCU_BUFFERALIGN 0x1000
+u32* socuBuffer = NULL;
+
+const char* certs_file = "sdmc:/mozilla-rootcerts.crt";
+
 int main(int argc, char* argv[])
 {
+	fsInit();
 	acInit();
+	socuBuffer = memalign(SOCU_BUFFERALIGN, SOCU_BUFFERSIZE);
+	socInit(socuBuffer, SOCU_BUFFERSIZE);
 	ptmuInit();
 
 	git_libgit2_init();
+
+	git_libgit2_opts(GIT_OPT_SET_SSL_CERT_LOCATIONS, certs_file, NULL);
 
 	gfxInitDefault();
 	consoleInit(GFX_TOP, NULL);
@@ -469,6 +470,9 @@ int main(int argc, char* argv[])
 	git_libgit2_shutdown();
 
 	ptmuExit();
+	socExit();
+	free(socuBuffer);
 	acExit();
+	fsExit();
 	return 0;
 }
